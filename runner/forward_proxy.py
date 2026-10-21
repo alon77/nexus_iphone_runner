@@ -13,7 +13,7 @@ trip, the gate asks its origin locally, and every entry the origin no longer con
 (STATIC_ASSET_SUFFIXES) is kept under its path alone: nginx serves the file whatever its query, and alpha's local
 stylesheets carry a ?v<time()> that changes on every page load.
 
-Standalone on purpose: the runner repo carries this file as-is, so it imports nothing from lib/.
+Standalone on purpose: the runner repo carries this file as-is, so it imports nothing from app/.
 """
 
 import argparse
