@@ -1,4 +1,4 @@
-# Pushed by `iphone setup` from Nexus lib/iphone/runner/ — this repo is a copy, never edit it here.
+# Pushed by `iphone setup` from Nexus app/iphone/runner/ — this repo is a copy, never edit it here.
 # Every input and artifact is ciphertext (runner/sealed.py); every decrypted value is masked. guide iphone:index
 name: iphone_run
 run-name: iphone ${{ inputs.nonce }}
