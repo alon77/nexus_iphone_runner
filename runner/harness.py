@@ -1,5 +1,5 @@
 """harness — the only surface an iPhone spec touches (`guide iphone:spec_format`). A spec is a Python file at
-experts/<expert>/tests/iphone/<name>.py whose top-level code calls these names, injected by serve:
+tests/Unit/<expert>/iphone/<name>.py whose top-level code calls these names, injected by serve:
 
     open(path)            Safari goes to the target host + path (or a full URL)
     tap(css)              closes any Safari tip bubble (it swallows the next tap), then a real native tap on the
