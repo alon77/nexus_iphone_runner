@@ -45,6 +45,20 @@ def _job_device_type(payload: dict) -> str:
     return device_type
 
 
+# Refused at once on the phone, as the local run stubs every outside host: the dev page's Meta pixel loaded nine times
+# over froze Safari 6.9s per page (run 20261021_100343_ccc975), and a test visit never counts in Alpha's analytics.
+TRACKING_HOSTS = ("connect.facebook.net", "www.facebook.com", "facebook.com", "www.googletagmanager.com",
+                  "www.google-analytics.com", "region1.google-analytics.com", "analytics.google.com",
+                  "stats.g.doubleclick.net", "googleads.g.doubleclick.net", "td.doubleclick.net",
+                  "www.googleadservices.com")
+
+
+def hosts_lines(hosts):
+    """The phone's /etc/hosts lines: every dev origin to this Mac's proxy, every tracking host refused."""
+    return ("".join(f"127.0.0.1 {host}\n" for host in hosts)
+            + "".join(f"0.0.0.0 {host}\n" for host in TRACKING_HOSTS if host not in hosts))
+
+
 def main():
     run_dir = Path(sys.argv[1])
     (run_dir / "out" / "shots").mkdir(parents=True, exist_ok=True)
@@ -55,7 +69,7 @@ def main():
         job_env.write(f"DEVICE_TYPE={device_type}\n")
     _write_private(run_dir / "run.json", json.dumps(payload))
     hosts = sorted({origin["host"] for origin in payload["origins"]})
-    (run_dir / "hosts_lines").write_text("".join(f"127.0.0.1 {host}\n" for host in hosts))
+    (run_dir / "hosts_lines").write_text(hosts_lines(hosts))
     print(f"unpacked: {len(payload['origins'])} origin(s) and the desk; phone {device_type.rsplit('.', 1)[1]}")
 
 
