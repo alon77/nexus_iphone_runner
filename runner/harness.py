@@ -36,6 +36,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urldefrag
 
 KEYBOARD_CAPABILITIES = {"appium:connectHardwareKeyboard": False,
                          "appium:forceSimulatorSoftwareKeyboardPresence": True}
@@ -101,6 +102,7 @@ FOCUS_STATE_JS = ("const element = document.querySelector(arguments[0]);"
                   " focused: document.activeElement === element};")
 BLUR_JS = "if (document.activeElement) document.activeElement.blur();"
 LEAVE_PAGE_JS = "window.nexus_left_page = true;"
+CURRENT_URL_JS = "return location.href;"
 PAGE_READY_JS = "return window.nexus_left_page ? 'the old page' : document.readyState;"
 READY_STATES = ("interactive", "complete")
 PROBE_PRESENT_JS = "return !!document.getElementById(arguments[0]);"
@@ -235,11 +237,13 @@ class Phone:
             self.driver.switch_to.context(web_context)
 
     def navigate(self, path: str):
+        url = path if path.startswith("http") else self.base_url + path
         try:
-            self.driver.execute_script(LEAVE_PAGE_JS)
+            if not _same_document(self.driver.execute_script(CURRENT_URL_JS), url):
+                self.driver.execute_script(LEAVE_PAGE_JS)
         except Exception:
             pass
-        self.driver.get(path if path.startswith("http") else self.base_url + path)
+        self.driver.get(url)
 
     def open(self, path: str):
         self.navigate(path)
@@ -405,6 +409,12 @@ def _attempt(phone: Phone, method: str) -> dict:
 def _no_keyboard_detail(last: dict) -> str:
     return (f"{KEYBOARD_NOT_SHOWING}: native keyboard {'visible' if last['native_keyboard'] else 'absent'}, "
             f"visualViewport shrank {last['shrink_px']:.0f}px (need {MIN_KEYBOARD_SHRINK_PX})")
+
+
+def _same_document(current: Optional[str], url: str) -> bool:
+    """A get that only changes the #fragment of the open document loads no new page, so the old-page
+    marker would never clear (live 20261021_100716_0623aa: /app/ to /app/#/user/messages/...)."""
+    return bool(current) and "#" in url and urldefrag(current).url == urldefrag(url).url
 
 
 def _page_loading(phone: Phone) -> Optional[str]:
