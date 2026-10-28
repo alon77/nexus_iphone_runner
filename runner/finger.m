@@ -2,7 +2,9 @@
 // (SimulatorKit IndigoHIDMessageForMouseNSEvent, the path its mouse takes) and sent through SimDeviceLegacyHIDClient.
 // A drag that starts on a screen edge carries that edge's flag, as the iPhone digitizer marks it, so iOS Safari
 // turns a left-edge drag into its back gesture (chain iphone_real_edge_swipe_20261010 trap 3: 9 of 9 back).
-// Usage: finger <udid> <none|top|left|bottom|right> <x0> <y0> <x1> <y1>   (x, y: shares 0..1 of the screen)
+// Usage: finger <udid> <none|top|left|bottom|right> <x0> <y0> <x1> <y1> [drag_ms]   (x, y: shares 0..1 of the screen)
+// With drag_ms the finger is a fling: no hold, a drag every FLING_STEP_MS across drag_ms, lifted at the last point still
+// moving, so the page keeps the release velocity (distance / drag_ms) and coasts.
 // Built on the runner by iphone_run.yml: clang -fobjc-arc -framework Foundation -framework CoreGraphics
 
 #import <CoreGraphics/CoreGraphics.h>
@@ -18,6 +20,8 @@ static const useconds_t BETWEEN_DRAGS_US = 30000;
 static const int DRAG_STEPS = 4;
 static const int64_t ACK_WAIT_NS = 3 * NSEC_PER_SEC;
 static const int ARGUMENT_COUNT = 7;
+static const int FLING_ARGUMENT_COUNT = 8;
+static const int FLING_STEP_MS = 16;
 static NSString *const CORE_SIMULATOR = @"/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator";
 static NSString *const SIMULATOR_KIT = @"Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit";
 
@@ -96,13 +100,18 @@ static id hid_client(id device) {
     return client;
 }
 
-static CGPoint point_at(CGPoint start, CGPoint end, int step) {
-    return CGPointMake(start.x + (end.x - start.x) * step / DRAG_STEPS, start.y + (end.y - start.y) * step / DRAG_STEPS);
+static CGPoint point_at(CGPoint start, CGPoint end, int step, int steps) {
+    return CGPointMake(start.x + (end.x - start.x) * step / steps, start.y + (end.y - start.y) * step / steps);
 }
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
-        if (argc != ARGUMENT_COUNT) fail(@"usage: finger <udid> <none|top|left|bottom|right> <x0> <y0> <x1> <y1>");
+        if (argc != ARGUMENT_COUNT && argc != FLING_ARGUMENT_COUNT) fail(@"usage: finger <udid> <none|top|left|bottom|right> <x0> <y0> <x1> <y1> [drag_ms]");
+        int drag_ms = argc == FLING_ARGUMENT_COUNT ? atoi(argv[7]) : 0;
+        if (argc == FLING_ARGUMENT_COUNT && drag_ms < FLING_STEP_MS) fail([NSString stringWithFormat:@"drag_ms %d is under %dms, the touch builder drops a drag that close", drag_ms, FLING_STEP_MS]);
+        int steps = drag_ms ? drag_ms / FLING_STEP_MS : DRAG_STEPS;
+        useconds_t between_us = drag_ms ? (useconds_t)(drag_ms * 1000 / steps) : BETWEEN_DRAGS_US;
+        useconds_t hold_us = drag_ms ? 0 : HOLD_ON_EDGE_US;
         uint32_t edge = edge_named(@(argv[2]));
         CGPoint start = CGPointMake(atof(argv[3]), atof(argv[4]));
         CGPoint end = CGPointMake(atof(argv[5]), atof(argv[6]));
@@ -123,10 +132,10 @@ int main(int argc, const char *argv[]) {
             }];
         };
         send(start, TOUCH_DOWN);
-        usleep(HOLD_ON_EDGE_US);
-        for (int step = 1; step <= DRAG_STEPS; step++) {
-            send(point_at(start, end, step), TOUCH_DRAGGED);
-            usleep(BETWEEN_DRAGS_US);
+        if (hold_us) usleep(hold_us);
+        for (int step = 1; step <= steps; step++) {
+            send(point_at(start, end, step, steps), TOUCH_DRAGGED);
+            if (step < steps || !drag_ms) usleep(between_us);
         }
         send(end, TOUCH_UP);
         if (dispatch_group_wait(acks, dispatch_time(DISPATCH_TIME_NOW, ACK_WAIT_NS))) fail(@"the simulator never acknowledged the touches");
