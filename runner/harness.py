@@ -12,6 +12,14 @@ tests/Unit/<expert>/iphone/<name>.py whose top-level code calls these names, inj
     viewport()            visual_height, visual_offset_top, inner_height, inner_width, scroll_y
     shot(name)            full-screen simulator screenshot, keyboard included
     js(script)            run JavaScript in the page, `return` hands a value back (document.cookie, input values)
+    fling(css, direction, distance, velocity)   a real vertical finger flick centred on the element's visible middle,
+                          direction "up" (finger moves up, the page scrolls down) or "down", distance in points (at
+                          most the web view's height), velocity in points/s at release; lifted still moving, so the
+                          page coasts. Returns at once — pair it with scroll_trace_start / scroll_trace_stop
+    scroll_trace_start()  record window.scrollY every animation frame and the touchend (the release) in the page
+    scroll_trace_stop()   wait until the page has been still for 600ms, then {samples [[ms, scroll_y]], release_ms,
+                          frames, end_scroll_y, reversals_before_release, reversals_after_release} — a coast that
+                          ends in a judder is reversals_after_release > 0
     swipe(css, from_share, to_share)   a real horizontal finger drag at the vertical middle of the element's visible
                           part, from/to a share of the screen width (0 = left edge, 1 = right edge) — 0 to 0.7 is
                           the left-edge swipe iPhone Safari turns into back. The finger is runner/finger.m, the
@@ -70,12 +78,27 @@ WEB_CONTENT_BUTTONS_CHAIN = "**/XCUIElementTypeWebView/**/XCUIElementTypeButton"
 PROBE_INPUT_ID = "nexus_keyboard_probe"
 KEYBOARD_NOT_SHOWING = "software keyboard not showing"
 SPEC_VERBS = ("open", "tap", "type", "keyboard_up", "dismiss_keyboard", "rect", "viewport", "shot", "js", "swipe",
-              "safari_bottom_bar")
+              "safari_bottom_bar", "fling", "scroll_trace_start", "scroll_trace_stop")
 WEB_VIEW_CLASS = "XCUIElementTypeWebView"
 SIMULATOR_UDID_ENV = "UDID"
 FINGER_TIMEOUT_S = 10
 SAFARI_EDGE_ZONE_PT = 20
 SWIPE_SETTLE_S = 1.0
+FLING_DIRECTIONS = ("up", "down")
+FLING_MIN_DRAG_MS = 16
+TRACE_STILL_MS = 600
+TRACE_MAX_WAIT_S = 8
+TRACE_START_JS = ("const trace = {samples: [], release_ms: null, running: true, t0: performance.now(), last_change: performance.now()};"
+                  " let last = null;"
+                  " const frame = () => { if (!trace.running) return; const y = window.scrollY;"
+                  " trace.samples.push([Math.round((performance.now() - trace.t0) * 10) / 10, y]);"
+                  " if (y !== last) { trace.last_change = performance.now(); last = y; }"
+                  " requestAnimationFrame(frame); };"
+                  " window.addEventListener('touchend', () => { if (trace.release_ms === null)"
+                  " trace.release_ms = Math.round((performance.now() - trace.t0) * 10) / 10; }, {capture: true, passive: true});"
+                  " window.nexus_scroll_trace = trace; requestAnimationFrame(frame);")
+TRACE_IDLE_JS = "return performance.now() - window.nexus_scroll_trace.last_change;"
+TRACE_STOP_JS = "const trace = window.nexus_scroll_trace; trace.running = false; return {samples: trace.samples, release_ms: trace.release_ms};"
 ACCESSIBILITY_ID = "accessibility id"
 BAR_PROBE_ID = "nexus_bar_probe"
 BAR_PROBE_CSS_HEIGHT = 100
@@ -205,6 +228,40 @@ class SwipeLine:
         return [f"{self.start_x / width:.4f}", f"{self.y / height:.4f}", f"{self.end_x / width:.4f}", f"{self.y / height:.4f}"]
 
 
+def _reversals(deltas: list) -> int:
+    signs = [1 if delta > 0 else -1 for delta in deltas if delta]
+    return sum(1 for before, after in zip(signs, signs[1:]) if before != after)
+
+
+def trace_summary(trace: dict) -> dict:
+    samples, release_ms = trace["samples"], trace["release_ms"]
+    deltas = [(after[0], after[1] - before[1]) for before, after in zip(samples, samples[1:])]
+    summary = {"samples": samples, "release_ms": release_ms, "frames": len(samples),
+               "end_scroll_y": samples[-1][1] if samples else None,
+               "reversals_before_release": None, "reversals_after_release": None}
+    if release_ms is not None:
+        before = [delta for at, delta in deltas if at <= release_ms]
+        after = [delta for at, delta in deltas if at > release_ms]
+        carried = [next((delta for delta in reversed(before) if delta), 0)]
+        summary["reversals_before_release"] = _reversals(before)
+        summary["reversals_after_release"] = _reversals(carried + after)
+    return summary
+
+
+@dataclass
+class FlingLine:
+    x: float
+    start_y: float
+    end_y: float
+    drag_ms: int
+    screen: dict
+
+    def finger_args(self) -> list:
+        width, height = self.screen["width"], self.screen["height"]
+        return [f"{self.x / width:.4f}", f"{self.start_y / height:.4f}", f"{self.x / width:.4f}", f"{self.end_y / height:.4f}",
+                str(self.drag_ms)]
+
+
 @dataclass
 class RunContext:
     driver: object
@@ -327,6 +384,36 @@ class Phone:
         subprocess.run(["finger", os.environ[SIMULATOR_UDID_ENV], line.edge(), *line.screen_shares()],
                        check=True, capture_output=True, text=True, timeout=FINGER_TIMEOUT_S)
         time.sleep(SWIPE_SETTLE_S)
+
+    def fling(self, css: str, direction: str, distance: float, velocity: float):  # kwargs-lint: ignore: spec verb, selector then flick is the spec format
+        if direction not in FLING_DIRECTIONS:
+            raise ValueError(f"fling direction {direction!r} is not one of: {', '.join(FLING_DIRECTIONS)}")
+        box = self.rect(css)
+        if not box:
+            raise LookupError(f"fling {css}: no such element")
+        with self._native():
+            web_view = self.driver.find_element(CLASS_NAME, WEB_VIEW_CLASS).rect
+            screen = self.driver.get_window_size()
+        if distance > web_view["height"]:
+            raise ValueError(f"fling distance {distance} is more than the web view's height {web_view['height']}")
+        drag_ms = round(distance / velocity * 1000)
+        if drag_ms < FLING_MIN_DRAG_MS:
+            raise ValueError(f"fling {distance} at {velocity}/s is {drag_ms}ms, under the {FLING_MIN_DRAG_MS}ms the touch builder needs")
+        centre = web_view["y"] + web_view["height"] / 2
+        half = distance / 2 if direction == "up" else -distance / 2
+        line = FlingLine(x=web_view["x"] + (max(box["left"], 0) + min(box["right"], web_view["width"])) / 2,
+                         start_y=centre + half, end_y=centre - half, drag_ms=drag_ms, screen=screen)
+        subprocess.run(["finger", os.environ[SIMULATOR_UDID_ENV], "none", *line.finger_args()],
+                       check=True, capture_output=True, text=True, timeout=FINGER_TIMEOUT_S)
+
+    def scroll_trace_start(self):
+        self.driver.execute_script(TRACE_START_JS)
+
+    def scroll_trace_stop(self) -> dict:
+        deadline = time.monotonic() + TRACE_MAX_WAIT_S
+        while time.monotonic() < deadline and self.driver.execute_script(TRACE_IDLE_JS) < TRACE_STILL_MS:
+            time.sleep(POLL_S)
+        return trace_summary(self.driver.execute_script(TRACE_STOP_JS))
 
     def _swipe_line(self, css: str, span: tuple) -> SwipeLine:
         box = self.rect(css)
