@@ -189,7 +189,9 @@ def _results(serving: dict, *, job: dict) -> dict:
 
 def _job_results(serving: dict, *, job: dict) -> dict:
     if job.get("kind") == APP_BUILD_KIND:
-        return built_and_launched(base64.b64decode(job["app_payload"]), job=job)
+        built = built_and_launched(base64.b64decode(job["app_payload"]), job=job)
+        serving["phone"].back_to_safari_from_app()
+        return built
     return _results(serving, job=job)
 
 
