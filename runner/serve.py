@@ -8,6 +8,7 @@ back to the desk as one tar.gz. Exits when the desk says stop or stays unreachab
 Run as `python -m runner.serve <run_dir>` on the runner; standalone apart from its sibling modules.
 """
 
+import base64
 import io
 import json
 import os
@@ -20,6 +21,7 @@ from pathlib import Path
 
 import requests
 
+from .app_build import built_and_launched
 from .forward_proxy import REVALIDATE_PATH, RUNNER_HEADER, TOKEN_HEADER
 from .harness import (APPIUM_URL, Phone, Recorder, RunContext, capabilities, keyboard_preflight,
                       prebuilt_wda_capabilities, with_keyboard_typing, with_own_page_wait)
@@ -40,6 +42,7 @@ ASSET_TIMEOUT_S = 30
 ASSET_WARMERS = 8
 SAFARI_ACCEPT_ENCODING = {"Accept-Encoding": "gzip, deflate, br"}
 LIBRARY_PATH_MARK = "site-packages"
+APP_BUILD_KIND = "app_build"
 
 
 class DeskClient:
@@ -184,11 +187,18 @@ def _results(serving: dict, *, job: dict) -> dict:
             "shots": recorder.shots, "tap_retries": recorder.tap_retries, "error": error, "timings": timings}
 
 
+def _job_results(serving: dict, *, job: dict) -> dict:
+    if job.get("kind") == APP_BUILD_KIND:
+        return built_and_launched(base64.b64decode(job["app_payload"]), job=job)
+    return _results(serving, job=job)
+
+
 def run_job(serving: dict, *, job: dict) -> bytes:
     job_dir = Path(serving["run_dir"]) / "jobs" / job["job_id"]
     job = {**job, "out_dir": job_dir / "out", "appium_offset": _appium_offset(serving)}
     (job["out_dir"] / "shots").mkdir(parents=True, exist_ok=True)
-    (job["out_dir"] / "results.json").write_text(json.dumps(_results(serving, job=job), indent=1))
+    (job["out_dir"] / "results.json").write_text(json.dumps(_job_results(serving, job={**job, "job_dir": job_dir}),
+                                                            indent=1))
     _save_appium_slice(serving, job=job)
     bundle = io.BytesIO()
     with tarfile.open(fileobj=bundle, mode="w:gz") as tar:
