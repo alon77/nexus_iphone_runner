@@ -65,6 +65,9 @@ TYPING_KEYS_PER_MINUTE = 600
 OSASCRIPT_TIMEOUT_S = 30
 POLL_S = 0.25
 NATIVE_CONTEXT = "NATIVE_APP"
+ALPHA_APP_BUNDLE_ID = "il.co.alpha"
+SAFARI_BUNDLE_ID = "com.apple.mobilesafari"
+APP_WEBVIEW_WAIT_S = 20
 CSS_SELECTOR = "css selector"
 IOS_CLASS_CHAIN = "-ios class chain"
 CLASS_NAME = "class name"
@@ -78,7 +81,7 @@ WEB_CONTENT_BUTTONS_CHAIN = "**/XCUIElementTypeWebView/**/XCUIElementTypeButton"
 PROBE_INPUT_ID = "nexus_keyboard_probe"
 KEYBOARD_NOT_SHOWING = "software keyboard not showing"
 SPEC_VERBS = ("open", "tap", "type", "keyboard_up", "dismiss_keyboard", "rect", "viewport", "shot", "js", "swipe",
-              "safari_bottom_bar", "fling", "scroll_trace_start", "scroll_trace_stop")
+              "safari_bottom_bar", "fling", "scroll_trace_start", "scroll_trace_stop", "in_app", "in_safari")
 WEB_VIEW_CLASS = "XCUIElementTypeWebView"
 SIMULATOR_UDID_ENV = "UDID"
 FINGER_TIMEOUT_S = 10
@@ -148,7 +151,8 @@ def capabilities(udid: str, start_url: str) -> dict:  # kwargs-lint: ignore: dev
             "appium:newCommandTimeout": DRIVER_NEVER_TIMES_OUT_S, "appium:showXcodeLog": True,
             "appium:webviewConnectTimeout": WEBVIEW_CONNECT_TIMEOUT_MS, "appium:webviewAtomWaitTimeout": WEBVIEW_ATOM_WAIT_MS,
             "appium:waitForIdleTimeout": NATIVE_IDLE_WAIT_S, "appium:iosSimulatorLogsPredicate": NO_SYSLOG_PREDICATE,
-            "appium:maxTypingFrequency": TYPING_KEYS_PER_MINUTE, "pageLoadStrategy": "eager", **KEYBOARD_CAPABILITIES}
+            "appium:maxTypingFrequency": TYPING_KEYS_PER_MINUTE, "pageLoadStrategy": "eager",
+            "appium:additionalWebviewBundleIds": [ALPHA_APP_BUNDLE_ID], **KEYBOARD_CAPABILITIES}
 
 
 def prebuilt_wda_capabilities(app_path: str) -> dict:
@@ -308,7 +312,36 @@ class Phone:
         if not_loaded:
             raise TimeoutError(f"open {path}: {not_loaded} after {OPEN_WAIT_S}s")
 
+    def _app_webview(self) -> Optional[str]:
+        contexts = self.driver.execute_script("mobile: getContexts", {"waitForWebviewMs": 0}) or []
+        return next((context["id"] for context in contexts
+                     if context.get("bundleId") == ALPHA_APP_BUNDLE_ID and context["id"] != NATIVE_CONTEXT), None)
+
+    def _accept_app_alerts(self):
+        with self._native():
+            try:
+                self.driver.execute_script("mobile: alert", {"action": "accept"})
+            except Exception:
+                pass
+
+    def in_app(self):
+        self.safari_context = getattr(self, "safari_context", None) or self.driver.current_context
+        self.driver.execute_script("mobile: activateApp", {"bundleId": ALPHA_APP_BUNDLE_ID})
+        self._accept_app_alerts()
+        missing = _waited(lambda: None if self._app_webview() else "no Alpha app web view yet", APP_WEBVIEW_WAIT_S)
+        if missing:
+            raise TimeoutError(f"in_app: {missing} after {APP_WEBVIEW_WAIT_S}s — is the app installed (`iphone app`)?")
+        self.driver.switch_to.context(self._app_webview())
+
+    def in_safari(self):
+        if getattr(self, "safari_context", None) is None:
+            return
+        self.driver.execute_script("mobile: activateApp", {"bundleId": SAFARI_BUNDLE_ID})
+        self.driver.switch_to.context(self.safari_context)
+        self.safari_context = None
+
     def clean_state(self):
+        self.in_safari()
         self.open(CLEAN_PATH)
         self.driver.delete_all_cookies()
         self.driver.execute_script(CLEAR_STORAGE_JS)
