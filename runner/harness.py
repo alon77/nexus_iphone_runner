@@ -324,9 +324,15 @@ class Phone:
             except Exception:
                 pass
 
+    def back_to_safari_from_app(self):
+        self._accept_app_alerts()
+        with self._native():
+            self.driver.execute_script("mobile: activateApp", {"bundleId": SAFARI_BUNDLE_ID})
+
     def in_app(self):
         self.safari_context = getattr(self, "safari_context", None) or self.driver.current_context
-        self.driver.execute_script("mobile: activateApp", {"bundleId": ALPHA_APP_BUNDLE_ID})
+        with self._native():
+            self.driver.execute_script("mobile: activateApp", {"bundleId": ALPHA_APP_BUNDLE_ID})
         self._accept_app_alerts()
         missing = _waited(lambda: None if self._app_webview() else "no Alpha app web view yet", APP_WEBVIEW_WAIT_S)
         if missing:
@@ -336,7 +342,8 @@ class Phone:
     def in_safari(self):
         if getattr(self, "safari_context", None) is None:
             return
-        self.driver.execute_script("mobile: activateApp", {"bundleId": SAFARI_BUNDLE_ID})
+        with self._native():
+            self.driver.execute_script("mobile: activateApp", {"bundleId": SAFARI_BUNDLE_ID})
         self.driver.switch_to.context(self.safari_context)
         self.safari_context = None
 
