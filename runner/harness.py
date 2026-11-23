@@ -312,10 +312,13 @@ class Phone:
         if not_loaded:
             raise TimeoutError(f"open {path}: {not_loaded} after {OPEN_WAIT_S}s")
 
-    def _app_webview(self) -> Optional[str]:
+    def _webview_of(self, bundle_id: str) -> Optional[str]:
         contexts = self.driver.execute_script("mobile: getContexts", {"waitForWebviewMs": 0}) or []
         return next((context["id"] for context in contexts
-                     if context.get("bundleId") == ALPHA_APP_BUNDLE_ID and context["id"] != NATIVE_CONTEXT), None)
+                     if context.get("bundleId") == bundle_id and context["id"] != NATIVE_CONTEXT), None)
+
+    def _app_webview(self) -> Optional[str]:
+        return self._webview_of(ALPHA_APP_BUNDLE_ID)
 
     def _accept_app_alerts(self):
         with self._native():
@@ -344,7 +347,7 @@ class Phone:
             return
         with self._native():
             self.driver.execute_script("mobile: activateApp", {"bundleId": SAFARI_BUNDLE_ID})
-        self.driver.switch_to.context(self.safari_context)
+        self.driver.switch_to.context(self._webview_of(SAFARI_BUNDLE_ID) or self.safari_context)
         self.safari_context = None
 
     def clean_state(self):
